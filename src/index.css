@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 18% 10%;
+    --foreground: 210 20% 96%;
+    --border: 220 10% 20%;
+    --input: 220 10% 20%;
+    --ring: 24 83% 48%;
+    --app-safe-top: max(calc(env(safe-area-inset-top) + 1rem), 3.75rem);
+  }
+
+  @media (min-width: 768px) {
+    :root {
+      --app-safe-top: max(env(safe-area-inset-top), 0.5rem);
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+    border-color: hsl(var(--border));
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    width: 100%;
+    overflow-x: hidden;
+  }
+
+  body {
+    margin: 0;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  button,
+  input,
+  textarea {
+    max-width: 100%;
+  }
+}

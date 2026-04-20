@@ -1,0 +1,9 @@
+services:
+  mail-app:
+    build: .
+    ports:
+      - "8787:8787"
+    env_file:
+      - .env
+    environment:
+      MAIL_API_PORT: "8787"

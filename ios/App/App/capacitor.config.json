@@ -1,0 +1,6 @@
+{
+	"appId": "com.mailapp.reader",
+	"appName": "Mail App",
+	"webDir": "dist",
+	"packageClassList": []
+}
