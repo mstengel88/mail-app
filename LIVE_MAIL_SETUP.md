@@ -4,13 +4,7 @@ This app uses a small local API bridge for IMAP/SMTP. Do not put mailbox credent
 
 ## 1. Create Local Environment
 
-Copy `.env.example` to `.env`, then fill in:
-
-```bash
-MAIL_USER=you@yourdomain.com
-MAIL_PASSWORD=your-mailbox-password-or-app-password
-MAIL_FROM_NAME=Your Name
-```
+Copy `.env.example` to `.env`. Mailbox usernames and passwords are no longer stored here; each employee signs in from the app.
 
 The IONOS defaults are already included:
 
@@ -66,6 +60,7 @@ If you use Vite dev server from the phone instead of the built Capacitor app, se
 
 ## 4. Current Live Features
 
+- Employee login with mailbox email/password.
 - Load recent messages from IMAP.
 - Mark messages read/unread.
 - Star/unstar messages.
@@ -74,3 +69,9 @@ If you use Vite dev server from the phone instead of the built Capacitor app, se
 - Send plain-text email through SMTP.
 
 Attachments and folder creation are still UI placeholders until we add persistence and attachment handling.
+
+## Security Notes
+
+- Credentials are held only in the running API process memory for the active session.
+- Restarting the API or Docker container logs everyone out.
+- For use beyond a trusted local network, put the app/API behind HTTPS before employees enter passwords.

@@ -2,10 +2,13 @@ import type { MailMessage } from "@/features/mail-reader/mailData";
 
 const configuredMailApiUrl = import.meta.env.VITE_MAIL_API_URL?.replace(/\/$/, "") ?? "";
 const sameOriginMailApiUrl =
-  typeof window !== "undefined" && window.location.protocol.startsWith("http") ? window.location.origin : "";
+  !import.meta.env.DEV && typeof window !== "undefined" && window.location.protocol.startsWith("http")
+    ? window.location.origin
+    : "";
 const mailApiUrl = configuredMailApiUrl || sameOriginMailApiUrl;
 
 export const isMailApiConfigured = Boolean(mailApiUrl);
+const tokenStorageKey = "mail-app-session-token";
 
 type MailApiResponse = {
   messages: MailMessage[];
@@ -20,6 +23,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...getAuthHeaders(),
       ...options?.headers,
     },
   });
@@ -30,6 +34,48 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function getAuthHeaders() {
+  const token = getMailSessionToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function getMailSessionToken() {
+  if (typeof localStorage === "undefined") return "";
+  return localStorage.getItem(tokenStorageKey) ?? "";
+}
+
+export function setMailSessionToken(token: string) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(tokenStorageKey, token);
+}
+
+export function clearMailSessionToken() {
+  if (typeof localStorage === "undefined") return;
+  localStorage.removeItem(tokenStorageKey);
+}
+
+export async function loginToMailbox(credentials: { email: string; password: string; displayName?: string }) {
+  const response = await request<{ token: string; email: string; displayName: string }>("/api/login", {
+    method: "POST",
+    body: JSON.stringify(credentials),
+    headers: {},
+  });
+  setMailSessionToken(response.token);
+  return response;
+}
+
+export async function getMailboxSession() {
+  return request<{ email: string; displayName: string }>("/api/session");
+}
+
+export async function logoutMailbox() {
+  try {
+    await request<{ ok: true }>("/api/logout", { method: "POST" });
+  } finally {
+    clearMailSessionToken();
+  }
 }
 
 export async function fetchMailMessages(folder: string) {

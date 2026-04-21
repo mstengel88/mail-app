@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   Archive,
   Bell,
@@ -44,8 +44,12 @@ import {
 } from "./mailData";
 import {
   archiveMailMessage,
+  getMailboxSession,
+  getMailSessionToken,
   fetchMailMessages,
   isMailApiConfigured,
+  loginToMailbox,
+  logoutMailbox,
   markMailMessageFlagged,
   markMailMessageSeen,
   sendMailMessage,
@@ -167,6 +171,12 @@ const MailReader = () => {
   const [draftTo, setDraftTo] = useState("");
   const [draftSubject, setDraftSubject] = useState("");
   const [draftText, setDraftText] = useState("");
+  const [sessionToken, setSessionToken] = useState(() => getMailSessionToken());
+  const [mailboxAccount, setMailboxAccount] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const selectedFolder = isMailFolderId(selectedView) ? selectedView : "inbox";
 
@@ -218,10 +228,25 @@ const MailReader = () => {
   }, []);
 
   useEffect(() => {
-    if (!isMailApiConfigured || selectedView.startsWith("custom:")) return;
+    if (!isMailApiConfigured || !sessionToken || selectedView.startsWith("custom:")) return;
 
     void loadLiveMessages(selectedView);
-  }, [selectedView]);
+  }, [selectedView, sessionToken]);
+
+  useEffect(() => {
+    if (!isMailApiConfigured || !sessionToken) return;
+
+    void getMailboxSession()
+      .then((session) => {
+        setMailboxAccount(session.email);
+        setMailApiStatus(`Signed in as ${session.email}`);
+      })
+      .catch(() => {
+        setSessionToken("");
+        setMailboxAccount("");
+        setMailApiStatus("Please sign in to sync mail.");
+      });
+  }, [sessionToken]);
 
   const closeMobileMenu = () => setIsMobileMenuOpen(false);
   const closeFolderMenu = () => setIsFolderMenuOpen(false);
@@ -234,9 +259,39 @@ const MailReader = () => {
       setLastUpdated(`Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
       setMailApiStatus("Live mailbox synced.");
     } catch (error) {
-      setMailApiStatus(error instanceof Error ? error.message : "Unable to sync mailbox.");
+      const message = error instanceof Error ? error.message : "Unable to sync mailbox.";
+      if (message.toLowerCase().includes("login required")) {
+        setSessionToken("");
+      }
+      setMailApiStatus(message);
       showPanel("status", "Could not reach the mail API. Keeping the current messages on screen.");
     }
+  };
+
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError("");
+
+    try {
+      const session = await loginToMailbox({ email: loginEmail, password: loginPassword });
+      setSessionToken(session.token);
+      setMailboxAccount(session.email);
+      setLoginPassword("");
+      setMailApiStatus(`Signed in as ${session.email}`);
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Mailbox login failed.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logoutMailbox();
+    setSessionToken("");
+    setMailboxAccount("");
+    setMessages(sampleMessages);
+    setMailApiStatus("Signed out.");
   };
 
   const showPanel = (view: Exclude<PanelView, null>, message: string) => {
@@ -381,6 +436,11 @@ const MailReader = () => {
       return;
     }
 
+    if (label === "Sign out") {
+      void handleLogout();
+      return;
+    }
+
     showPanel("status", `${label} opened.`);
   };
 
@@ -400,6 +460,20 @@ const MailReader = () => {
       showPanel("status", error instanceof Error ? error.message : "Unable to send email.");
     }
   };
+
+  if (isMailApiConfigured && !sessionToken) {
+    return (
+      <LoginScreen
+        email={loginEmail}
+        password={loginPassword}
+        error={loginError}
+        isLoggingIn={isLoggingIn}
+        onEmailChange={setLoginEmail}
+        onPasswordChange={setLoginPassword}
+        onSubmit={handleLogin}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-[#171717] text-[#d9d9d9]">
@@ -470,7 +544,7 @@ const MailReader = () => {
                   ))}
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#2d2d2d] text-xs font-semibold text-[#c8c8c8]">
-                  MS
+                  {getInitials(mailboxAccount || "Mail Sync")}
                 </div>
               </div>
             </div>
@@ -960,6 +1034,90 @@ function getVisibleMessagesForView(
       .includes(normalizedQuery);
   });
 }
+
+function getInitials(value: string) {
+  return value
+    .split(/[@\s.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+}
+
+type LoginScreenProps = {
+  email: string;
+  password: string;
+  error: string;
+  isLoggingIn: boolean;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+};
+
+const LoginScreen = ({
+  email,
+  password,
+  error,
+  isLoggingIn,
+  onEmailChange,
+  onPasswordChange,
+  onSubmit,
+}: LoginScreenProps) => (
+  <div className="flex min-h-screen w-full items-center justify-center bg-[#171717] px-4 py-10 text-[#d9d9d9]">
+    <form
+      onSubmit={onSubmit}
+      className="w-full max-w-md rounded-3xl border border-white/10 bg-[#101010] p-6 shadow-[0_24px_70px_rgba(0,0,0,0.45)]"
+    >
+      <p className="text-xs uppercase tracking-[0.34em] text-[#d17a46]">Mail App</p>
+      <h1 className="mt-3 text-3xl font-semibold text-white">Sign in to your mailbox</h1>
+      <p className="mt-3 text-sm leading-6 text-[#a7a7a7]">
+        Use your IONOS mailbox email and password. Credentials are sent to the local mail API for this session and are
+        not stored in the app bundle or `.env`.
+      </p>
+
+      <div className="mt-6 grid gap-3">
+        <label className="grid gap-2 text-sm text-[#cfcfcf]">
+          Email address
+          <Input
+            value={email}
+            onChange={(event) => onEmailChange(event.target.value)}
+            type="email"
+            autoComplete="username"
+            placeholder="you@yourdomain.com"
+            className="h-11 border-white/10 bg-[#1d1d1d] text-white"
+            required
+          />
+        </label>
+        <label className="grid gap-2 text-sm text-[#cfcfcf]">
+          Password
+          <Input
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            type="password"
+            autoComplete="current-password"
+            placeholder="Mailbox password"
+            className="h-11 border-white/10 bg-[#1d1d1d] text-white"
+            required
+          />
+        </label>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          {error}
+        </div>
+      ) : null}
+
+      <button
+        type="submit"
+        disabled={isLoggingIn}
+        className="mt-6 h-11 w-full rounded-xl bg-[#b04e12] font-semibold text-white transition hover:bg-[#c85a15] disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {isLoggingIn ? "Signing in..." : "Sign in"}
+      </button>
+    </form>
+  </div>
+);
 
 type MessageRowProps = {
   message: MailMessage;

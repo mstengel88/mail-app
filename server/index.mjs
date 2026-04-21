@@ -4,6 +4,7 @@ import express from "express";
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import nodemailer from "nodemailer";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -23,6 +24,7 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "1mb" }));
+const sessions = new Map();
 
 const folderMap = {
   inbox: process.env.MAIL_FOLDER_INBOX ?? "INBOX",
@@ -35,33 +37,41 @@ const folderMap = {
   trash: process.env.MAIL_FOLDER_TRASH ?? "Trash",
 };
 
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required environment variable ${name}`);
-  return value;
+function getAuthFromRequest(request) {
+  const header = request.get("authorization") ?? "";
+  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  const session = sessions.get(token);
+
+  if (!session) {
+    const error = new Error("Login required.");
+    error.status = 401;
+    throw error;
+  }
+
+  return { token, session };
 }
 
-function getImapClient() {
+function getImapClient(session) {
   return new ImapFlow({
     host: process.env.MAIL_IMAP_HOST ?? "imap.ionos.com",
     port: Number(process.env.MAIL_IMAP_PORT ?? 993),
     secure: (process.env.MAIL_IMAP_SECURE ?? "true") === "true",
     auth: {
-      user: requireEnv("MAIL_USER"),
-      pass: requireEnv("MAIL_PASSWORD"),
+      user: session.email,
+      pass: session.password,
     },
     logger: false,
   });
 }
 
-function getTransporter() {
+function getTransporter(session) {
   return nodemailer.createTransport({
     host: process.env.MAIL_SMTP_HOST ?? "smtp.ionos.com",
     port: Number(process.env.MAIL_SMTP_PORT ?? 465),
     secure: (process.env.MAIL_SMTP_SECURE ?? "true") === "true",
     auth: {
-      user: requireEnv("MAIL_USER"),
-      pass: requireEnv("MAIL_PASSWORD"),
+      user: session.email,
+      pass: session.password,
     },
   });
 }
@@ -95,9 +105,9 @@ function formatReceivedAt(date) {
   return messageDate.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-async function readMessages(view = "inbox", limit = 50) {
+async function readMessages(session, view = "inbox", limit = 50) {
   const folder = folderMap[view] ?? folderMap.inbox;
-  const client = getImapClient();
+  const client = getImapClient(session);
 
   await client.connect();
   const lock = await client.getMailboxLock(folder);
@@ -148,9 +158,9 @@ async function readMessages(view = "inbox", limit = 50) {
   }
 }
 
-async function withMessage(id, action) {
+async function withMessage(session, id, action) {
   const { folder, uid } = decodeId(id);
-  const client = getImapClient();
+  const client = getImapClient(session);
 
   await client.connect();
   const lock = await client.getMailboxLock(folder);
@@ -167,65 +177,125 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true });
 });
 
+app.post("/api/login", async (request, response) => {
+  const body = z
+    .object({
+      email: z.string().email(),
+      password: z.string().min(1),
+      displayName: z.string().optional(),
+    })
+    .safeParse(request.body);
+
+  if (!body.success) {
+    response.status(400).json({ error: "Enter a valid email and password." });
+    return;
+  }
+
+  const session = {
+    email: body.data.email,
+    password: body.data.password,
+    displayName: body.data.displayName || body.data.email,
+    createdAt: Date.now(),
+  };
+  const client = getImapClient(session);
+
+  try {
+    await client.connect();
+    await client.logout();
+
+    const token = crypto.randomUUID();
+    sessions.set(token, session);
+    response.json({ token, email: session.email, displayName: session.displayName });
+  } catch (error) {
+    response.status(401).json({ error: error.message || "Mailbox login failed." });
+  }
+});
+
+app.get("/api/session", (request, response) => {
+  try {
+    const { session } = getAuthFromRequest(request);
+    response.json({ email: session.email, displayName: session.displayName });
+  } catch (error) {
+    response.status(error.status ?? 401).json({ error: error.message });
+  }
+});
+
+app.post("/api/logout", (request, response) => {
+  try {
+    const { token } = getAuthFromRequest(request);
+    sessions.delete(token);
+  } catch {
+    // Logging out should be idempotent from the client's perspective.
+  }
+
+  response.json({ ok: true });
+});
+
 app.get("/api/messages", async (request, response) => {
   try {
+    const { session } = getAuthFromRequest(request);
     const view = String(request.query.folder ?? "inbox");
     const limit = Math.min(Number(request.query.limit ?? 50), 100);
-    const messages = await readMessages(view, limit);
+    const messages = await readMessages(session, view, limit);
     response.json({ messages });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
 app.patch("/api/messages/:id/seen", async (request, response) => {
   try {
+    const { session } = getAuthFromRequest(request);
     const body = z.object({ seen: z.boolean() }).parse(request.body);
-    await withMessage(request.params.id, (client, uid) =>
+    await withMessage(session, request.params.id, (client, uid) =>
       body.seen
         ? client.messageFlagsAdd(uid, ["\\Seen"], { uid: true })
         : client.messageFlagsRemove(uid, ["\\Seen"], { uid: true }),
     );
     response.json({ ok: true });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
 app.patch("/api/messages/:id/flagged", async (request, response) => {
   try {
+    const { session } = getAuthFromRequest(request);
     const body = z.object({ flagged: z.boolean() }).parse(request.body);
-    await withMessage(request.params.id, (client, uid) =>
+    await withMessage(session, request.params.id, (client, uid) =>
       body.flagged
         ? client.messageFlagsAdd(uid, ["\\Flagged"], { uid: true })
         : client.messageFlagsRemove(uid, ["\\Flagged"], { uid: true }),
     );
     response.json({ ok: true });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
 app.post("/api/messages/:id/archive", async (request, response) => {
   try {
-    await withMessage(request.params.id, (client, uid) => client.messageMove(uid, folderMap.archive, { uid: true }));
+    const { session } = getAuthFromRequest(request);
+    await withMessage(session, request.params.id, (client, uid) => client.messageMove(uid, folderMap.archive, { uid: true }));
     response.json({ ok: true });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
 app.post("/api/messages/:id/trash", async (request, response) => {
   try {
-    await withMessage(request.params.id, (client, uid) => client.messageMove(uid, folderMap.trash, { uid: true }));
+    const { session } = getAuthFromRequest(request);
+    await withMessage(session, request.params.id, (client, uid) => client.messageMove(uid, folderMap.trash, { uid: true }));
     response.json({ ok: true });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
 app.post("/api/send", async (request, response) => {
   try {
+    const { session } = getAuthFromRequest(request);
     const body = z
       .object({
         to: z.string().min(3),
@@ -233,9 +303,9 @@ app.post("/api/send", async (request, response) => {
         text: z.string().min(1),
       })
       .parse(request.body);
-    const fromName = process.env.MAIL_FROM_NAME ?? "Mail App";
-    const fromAddress = requireEnv("MAIL_USER");
-    const transporter = getTransporter();
+    const fromName = session.displayName ?? "Mail App";
+    const fromAddress = session.email;
+    const transporter = getTransporter(session);
 
     await transporter.sendMail({
       from: `${fromName} <${fromAddress}>`,
@@ -246,7 +316,7 @@ app.post("/api/send", async (request, response) => {
 
     response.json({ ok: true });
   } catch (error) {
-    response.status(500).json({ error: error.message });
+    response.status(error.status ?? 500).json({ error: error.message });
   }
 });
 
