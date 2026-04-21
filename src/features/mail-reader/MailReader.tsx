@@ -177,6 +177,7 @@ const MailReader = () => {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isMessageOpen, setIsMessageOpen] = useState(false);
 
   const selectedFolder = isMailFolderId(selectedView) ? selectedView : "inbox";
 
@@ -305,6 +306,7 @@ const MailReader = () => {
     setShowUnreadOnly(false);
     setShowMoreActions(false);
     setActivePanel(null);
+    setIsMessageOpen(false);
     closeMobileMenu();
     closeFolderMenu();
   };
@@ -350,7 +352,23 @@ const MailReader = () => {
     }
 
     setMessages((current) => current.filter((message) => message.id !== selectedMessage.id));
+    setIsMessageOpen(false);
     showPanel("status", `"${selectedMessage.subject}" moved to trash.`);
+  };
+
+  const openMessage = (message: MailMessage) => {
+    setSelectedMessageId(message.id);
+    setIsMessageOpen(true);
+
+    if (isMailApiConfigured && message.unread) {
+      void markMailMessageSeen(message.id, true).catch((error) =>
+        showPanel("status", error instanceof Error ? error.message : "Unable to mark read."),
+      );
+    }
+
+    setMessages((current) =>
+      current.map((item) => (item.id === message.id ? { ...item, unread: false } : item)),
+    );
   };
 
   const handleAction = async (label: string) => {
@@ -920,17 +938,7 @@ const MailReader = () => {
                           key={message.id}
                           message={message}
                           isSelected={message.id === selectedMessage?.id}
-                          onSelect={() => {
-                            setSelectedMessageId(message.id);
-                            if (isMailApiConfigured && message.unread) {
-                              void markMailMessageSeen(message.id, true).catch((error) =>
-                                showPanel("status", error instanceof Error ? error.message : "Unable to mark read."),
-                              );
-                            }
-                            setMessages((current) =>
-                              current.map((item) => (item.id === message.id ? { ...item, unread: false } : item)),
-                            );
-                          }}
+                          onSelect={() => openMessage(message)}
                         />
                       ))}
                     </div>
@@ -949,6 +957,22 @@ const MailReader = () => {
               </div>
             </div>
           </main>
+
+          {isMessageOpen && selectedMessage ? (
+            <MessageReader
+              message={selectedMessage}
+              onClose={() => setIsMessageOpen(false)}
+              onReply={() => {
+                setDraftTo(selectedMessage.fromAddress);
+                setDraftSubject(`Re: ${selectedMessage.subject}`);
+                setDraftText("");
+                setIsMessageOpen(false);
+                showPanel("compose", `Reply draft for "${selectedMessage.subject}"`);
+              }}
+              onArchive={() => void handleAction("Archive")}
+              onTrash={() => void handleDelete()}
+            />
+          ) : null}
 
           <aside className="hidden border-l border-white/5 bg-[#1b1b1b] py-4 lg:block">
             <div className="flex flex-col items-center gap-3">
@@ -1116,6 +1140,94 @@ const LoginScreen = ({
         {isLoggingIn ? "Signing in..." : "Sign in"}
       </button>
     </form>
+  </div>
+);
+
+type MessageReaderProps = {
+  message: MailMessage;
+  onClose: () => void;
+  onReply: () => void;
+  onArchive: () => void;
+  onTrash: () => void;
+};
+
+const MessageReader = ({ message, onClose, onReply, onArchive, onTrash }: MessageReaderProps) => (
+  <div className="fixed inset-0 z-50 flex bg-[#111111] text-[#d9d9d9] lg:absolute lg:inset-y-0 lg:left-[286px] lg:right-[52px]">
+    <div className="flex min-h-0 w-full flex-col bg-[#1c1c1c]">
+      <div
+        className="border-b border-white/10 bg-[#101010] px-4 pb-3"
+        style={{ paddingTop: "var(--app-safe-top)" }}
+      >
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-10 w-10 items-center justify-center rounded-md border border-white/10 text-[#d0d0d0] transition hover:bg-white/5 hover:text-white"
+            aria-label="Back to inbox"
+          >
+            <X className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm text-[#9a9a9a]">{message.fromAddress}</p>
+            <h2 className="truncate text-lg font-semibold text-white">{message.subject}</h2>
+          </div>
+        </div>
+
+        <div className="mt-3 flex gap-2 overflow-x-auto text-[#a8a8a8]">
+          <button
+            type="button"
+            onClick={onReply}
+            className="flex shrink-0 items-center gap-2 rounded-lg bg-[#242424] px-3 py-2 text-sm transition hover:bg-[#303030] hover:text-white"
+          >
+            <Reply className="h-4 w-4" />
+            Reply
+          </button>
+          <button
+            type="button"
+            onClick={onArchive}
+            className="flex shrink-0 items-center gap-2 rounded-lg bg-[#242424] px-3 py-2 text-sm transition hover:bg-[#303030] hover:text-white"
+          >
+            <Archive className="h-4 w-4" />
+            Archive
+          </button>
+          <button
+            type="button"
+            onClick={onTrash}
+            className="flex shrink-0 items-center gap-2 rounded-lg bg-[#242424] px-3 py-2 text-sm transition hover:bg-[#303030] hover:text-white"
+          >
+            <Trash2 className="h-4 w-4" />
+            Trash
+          </button>
+        </div>
+      </div>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <article className="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6">
+          <div className="rounded-2xl border border-white/10 bg-[#222] p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="font-semibold text-white">{message.from}</p>
+                <p className="break-all text-sm text-[#a6a6a6]">{message.fromAddress}</p>
+              </div>
+              <p className="shrink-0 text-right text-xs text-[#8f8f8f]">{message.receivedAt}</p>
+            </div>
+            <h1 className="mt-5 text-2xl font-semibold leading-tight text-white">{message.subject}</h1>
+          </div>
+
+          <div className="mt-4 space-y-4 rounded-2xl border border-white/10 bg-[#f4f0e8] p-5 text-[15px] leading-7 text-[#1f1f1f]">
+            {message.body.length ? (
+              message.body.map((paragraph, index) => (
+                <p key={`${message.id}-${index}`} className="break-words">
+                  {paragraph}
+                </p>
+              ))
+            ) : (
+              <p>{message.preview || "No message body available."}</p>
+            )}
+          </div>
+        </article>
+      </ScrollArea>
+    </div>
   </div>
 );
 
